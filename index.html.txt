@@ -1,0 +1,131 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MediaSync App</title>
+  <link rel="manifest" href="manifest.json">
+  <script src="https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js"></script>
+  <style>
+    body { font-family: sans-serif; padding: 20px; max-width: 500px; margin: auto; text-align: center; background-color: #f4f4f9; }
+    h1 { color: #333; }
+    .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+    input { display: block; margin: 15px auto; }
+    button { background: #6200ea; color: white; border: none; padding: 12px 24px; border-radius: 5px; font-size: 16px; width: 100%; cursor: pointer; }
+    button:disabled { background: #aaa; }
+    #status { margin-top: 15px; font-weight: bold; color: #555; }
+    video { width: 100%; margin-top: 20px; border-radius: 10px; display: none; }
+    #downloadBtn { margin-top: 15px; background: #00c853; display: none; text-decoration: none; padding: 12px 24px; border-radius: 5px; color: white; font-weight: bold; }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h1>MediaSync</h1>
+    <p>Merge a Video or Image with a Song directly on your device.</p>
+    
+    <label for="visualInput"><strong>1. Upload Video or Image:</strong></label>
+    <input type="file" id="visualInput" accept="video/*,image/*">
+    
+    <label for="audioInput"><strong>2. Upload Song (Audio):</strong></label>
+    <input type="file" id="audioInput" accept="audio/*">
+    
+    <button id="processBtn">Sync & Generate Video</button>
+    
+    <p id="status"></p>
+    
+    <video id="outputVideo" controls></video>
+    <a id="downloadBtn" download="synced_output.mp4">Download to Device</a>
+  </div>
+
+  <script>
+    // Register Service Worker for PWA / Android Installability
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js');
+    }
+
+    const { createFFmpeg, fetchFile } = FFmpeg;
+    const ffmpeg = createFFmpeg({ log: true });
+
+    document.getElementById('processBtn').addEventListener('click', async () => {
+      const visualFile = document.getElementById('visualInput').files[0];
+      const audioFile = document.getElementById('audioInput').files[0];
+      const statusText = document.getElementById('status');
+
+      if (!visualFile || !audioFile) {
+        alert('Please upload both a visual file (video/image) and an audio file.');
+        return;
+      }
+
+      document.getElementById('processBtn').disabled = true;
+      document.getElementById('outputVideo').style.display = 'none';
+      document.getElementById('downloadBtn').style.display = 'none';
+      
+      try {
+        statusText.innerText = 'Loading processing engine...';
+        if (!ffmpeg.isLoaded()) await ffmpeg.load();
+
+        statusText.innerText = 'Reading files...';
+        const visualExt = visualFile.name.split('.').pop();
+        const audioExt = audioFile.name.split('.').pop();
+        
+        ffmpeg.FS('writeFile', `input.${visualExt}`, await fetchFile(visualFile));
+        ffmpeg.FS('writeFile', `audio.${audioExt}`, await fetchFile(audioFile));
+
+        statusText.innerText = 'Synchronizing audio and video... This may take a minute depending on your device processing power.';
+
+        // Check if the input is an image or video to determine the proper FFmpeg command
+        if (visualFile.type.startsWith('image/')) {
+          // If image: loop the image for the duration of the audio
+          await ffmpeg.run(
+            '-loop', '1', 
+            '-i', `input.${visualExt}`, 
+            '-i', `audio.${audioExt}`, 
+            '-c:v', 'libx264', 
+            '-c:a', 'aac', 
+            '-b:a', '192k', 
+            '-pix_fmt', 'yuv420p', 
+            '-shortest', 
+            'output.mp4'
+          );
+        } else {
+          // If video: Replace/Add the audio track to the video, cutting at the shortest stream
+          await ffmpeg.run(
+            '-i', `input.${visualExt}`, 
+            '-i', `audio.${audioExt}`, 
+            '-c:v', 'copy', 
+            '-c:a', 'aac', 
+            '-map', '0:v:0', 
+            '-map', '1:a:0', 
+            '-shortest', 
+            'output.mp4'
+          );
+        }
+
+        statusText.innerText = 'Done! Preparing download...';
+        
+        // Read output and create a downloadable Blob URL
+        const data = ffmpeg.FS('readFile', 'output.mp4');
+        const videoBlob = new Blob([data.buffer], { type: 'video/mp4' });
+        const videoUrl = URL.createObjectURL(videoBlob);
+
+        const videoElement = document.getElementById('outputVideo');
+        videoElement.src = videoUrl;
+        videoElement.style.display = 'block';
+
+        const downloadBtn = document.getElementById('downloadBtn');
+        downloadBtn.href = videoUrl;
+        downloadBtn.style.display = 'inline-block';
+
+        statusText.innerText = 'Success! You can now watch or download your video.';
+
+      } catch (error) {
+        console.error(error);
+        statusText.innerText = 'An error occurred. Check console for details.';
+      } finally {
+        document.getElementById('processBtn').disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
